@@ -4,6 +4,8 @@
     "actions": [],
     "alwaysShowTabs": false,
     "launchMode": "maximizedFocus",
+    "theme": "Frosted",
+    "useAcrylicInTabRow": true,
     "copyFormatting": "none",
     "copyOnSelect": false,
     "defaultProfile": "{7d1f6a3e-4b2c-4e8a-9f10-3c5d2e8b4a01}",
@@ -47,7 +49,11 @@
                 "size": 11
             },
             "opacity": 80,
-            "useAcrylic": true
+            "useAcrylic": true,
+            "unfocusedAppearance":
+            {
+                "opacity": 80
+            }
         },
         "list":
         [
@@ -103,5 +109,21 @@
             "yellow": "#D79921"
         }
     ],
-    "themes": []
+    "themes":
+    [
+        {
+            "name": "Frosted",
+            "window":
+            {
+                "applicationTheme": "dark",
+                "useMica": true
+            },
+            "tab":
+            {
+                "background": "terminalBackground",
+                "unfocusedBackground": "#00000000",
+                "showCloseButton": "hover"
+            }
+        }
+    ]
 }

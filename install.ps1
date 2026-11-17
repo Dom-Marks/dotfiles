@@ -249,6 +249,15 @@ foreach ($k in $envVars.Keys) {
     Set-Item "env:$k" $envVars[$k]
 }
 
+Step 'Windows appearance (for Windows Terminal frosted glass)'
+# Acrylic/glass only renders when "Transparency effects" is on. Per-user, no admin.
+$personalize = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+if (-not (Test-Path $personalize)) { New-Item -Path $personalize -Force | Out-Null }
+if ((Get-ItemProperty $personalize -ErrorAction SilentlyContinue).EnableTransparency -ne 1) {
+    Set-ItemProperty $personalize -Name EnableTransparency -Value 1 -Type DWord
+    Did 'turned on Windows transparency effects'
+} else { Ok 'transparency effects on' }
+
 Step 'PowerShell profile'
 $stub = @(
     '# Managed by ~/dotfiles/install.ps1 - edit ~/dotfiles/powershell/profile.ps1 instead.',
