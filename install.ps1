@@ -1,11 +1,13 @@
 # =====================================================================
 #  Dotfiles installer for Windows - no admin required.
 #
-#  Fresh machine - paste into cmd, Windows PowerShell or pwsh (no admin needed):
-#    powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.ps1 | iex"
-#
-#  If security software blocks that, from cmd:
+#  Fresh machine - paste into cmd (no admin needed):
 #    curl.exe -fsSLo %TEMP%\dotfiles.cmd https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.cmd && %TEMP%\dotfiles.cmd
+#
+#  Same thing from Windows PowerShell or pwsh:
+#    cmd /c "curl.exe -fsSLo %TEMP%\dotfiles.cmd https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.cmd && %TEMP%\dotfiles.cmd"
+#
+#  ("irm ... | iex" also works where security software allows it.)
 #
 #  Works in Windows PowerShell 5.1 and PowerShell 7+.
 #
@@ -53,6 +55,15 @@ function Has($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 function Native([scriptblock]$Block) {
     $ErrorActionPreference = 'Continue'
     & $Block
+}
+
+# Download an installer script to a file and run it. Avoids "irm | iex",
+# which endpoint security often blocks.
+function Run-Installer($Url, [string[]]$ExtraArgs = @()) {
+    $file = Join-Path $env:TEMP ("dotfiles-" + [IO.Path]::GetFileName(([Uri]$Url).AbsolutePath))
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $file
+    Native { powershell -NoProfile -ExecutionPolicy Bypass -File $file @ExtraArgs }
+    Remove-Item $file -ErrorAction SilentlyContinue
 }
 
 function Is-Admin {
@@ -145,12 +156,11 @@ if (-not $ConfigOnly) {
 
     Step 'Scoop'
     if (-not (Has scoop)) {
-        $scoopInstaller = Invoke-RestMethod https://get.scoop.sh
         if (Is-Admin) {
             Warn 'running as administrator - installing scoop with -RunAsAdmin (still per-user)'
-            Native { & ([scriptblock]::Create($scoopInstaller)) -RunAsAdmin }
+            Run-Installer 'https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1' @('-RunAsAdmin')
         } else {
-            Native { & ([scriptblock]::Create($scoopInstaller)) }
+            Run-Installer 'https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1'
         }
         Refresh-Path
         Did 'installed scoop'
@@ -171,14 +181,14 @@ if (-not $ConfigOnly) {
 
     Step 'herdr'
     if (-not (Has herdr)) {
-        Native { powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://herdr.dev/install.ps1 | iex" }
+        Run-Installer 'https://herdr.dev/install.ps1'
         Refresh-Path
         Did 'installed herdr'
     } else { Ok 'herdr already installed' }
 
     Step 'pi'
     if (-not (Has pi)) {
-        Native { powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://pi.dev/install.ps1 | iex" }
+        Run-Installer 'https://pi.dev/install.ps1'
         Refresh-Path
         Did 'installed pi'
     } else { Ok 'pi already installed' }

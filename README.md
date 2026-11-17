@@ -5,17 +5,19 @@ Everything installs per-user via [scoop](https://scoop.sh) and official installe
 
 ## Install on a fresh machine
 
-Open **cmd**, **Windows PowerShell** or **pwsh** and paste:
-
-```
-powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.ps1 | iex"
-```
-
-If security software blocks that, use this from **cmd** instead:
+From **cmd** (`Win+R`, then `cmd`):
 
 ```
 curl.exe -fsSLo %TEMP%\dotfiles.cmd https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.cmd && %TEMP%\dotfiles.cmd
 ```
+
+From **Windows PowerShell** or **pwsh**:
+
+```
+cmd /c "curl.exe -fsSLo %TEMP%\dotfiles.cmd https://raw.githubusercontent.com/Dom-Marks/dotfiles/main/install.cmd && %TEMP%\dotfiles.cmd"
+```
+
+These commands download the files first and then run them. They avoid `irm ... | iex`, which security software often blocks ("Access is denied").
 
 Then close the window, open a new one, and:
 
