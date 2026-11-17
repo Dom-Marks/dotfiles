@@ -65,7 +65,7 @@ You can re-run the installer at any time. It skips anything already in place. An
 | `pi/settings.json` | `~/.pi/agent/settings.json` | Merged in, so pi's own state and login stay local |
 
 Apps installed by scoop: 7zip, git, neovim, ripgrep, fd, mingw, tree-sitter, starship, zoxide, yazi, windows-terminal, JetBrainsMono Nerd Font.
-Plus [herdr](https://herdr.dev) and [pi](https://pi.dev) with their own installers, then the `pi-web-access` package and the herdr-to-pi integration.
+Plus [herdr](https://herdr.dev) and [pi](https://pi.dev) with their own installers, then the `pi-web-access` and [`ponytail`](https://github.com/DietrichGebert/ponytail) packages and the herdr-to-pi integration.
 
 ## Neovim cheat sheet
 
