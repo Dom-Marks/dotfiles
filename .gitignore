@@ -1,2 +1,29 @@
 # backups made by install.ps1
 *.bak-*
+
+# ---------------------------------------------------------------------
+# Logins, credentials and agent history - must NEVER be committed.
+# These live only on each machine. Log in again per machine instead.
+# ---------------------------------------------------------------------
+auth.json
+**/auth.json
+credentials*.json
+.credentials*
+*.credentials
+.claude.json
+.claude/
+.codex/
+sessions/
+**/sessions/
+models-store.json
+web-search-cache/
+*.pem
+*.key
+*.pfx
+.env
+.env.*
+*token*
+*secret*
+
+# Machine-specific shell setup (work shares, local paths)
+.dotfiles-local.ps1

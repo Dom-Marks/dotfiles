@@ -38,6 +38,17 @@ function dots-save {
     Push-Location $env:DOTFILES
     try {
         git add -A
+        # Safety net: refuse to push anything that looks like a login or key
+        $staged = @(git diff --cached --name-only)
+        $badNames = @($staged | Where-Object { $_ -match '(^|/)(auth\.json|\.claude\.json|credentials[^/]*|\.env[^/]*)$|token|secret|\.(pem|key|pfx)$' })
+        $badText  = @(git diff --cached -U0 | Select-String -Pattern 'sk-ant-[A-Za-z0-9_-]{10,}|"(access|refresh)_?[Tt]oken"\s*:|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----')
+        if ($badNames.Count -or $badText.Count) {
+            git reset -q
+            Write-Host 'dots-save STOPPED: this looks like a login/secret - nothing was committed:' -ForegroundColor Red
+            $badNames | ForEach-Object { Write-Host "  file: $_" -ForegroundColor Red }
+            if ($badText.Count) { Write-Host "  $($badText.Count) line(s) look like tokens/keys in the changes" -ForegroundColor Red }
+            return
+        }
         if (git status --porcelain) {
             git status --short
             git commit -m $Message
