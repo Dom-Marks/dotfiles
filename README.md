@@ -25,6 +25,21 @@ Then close the window, open a new one, and:
 2. Open `nvim` once. Language servers and syntax parsers install on first launch.
 3. Optional: put machine-specific bits in `~/.dotfiles-local.ps1`, such as network share shortcuts. That file is not in git.
 
+### How long does it take?
+
+| Situation | Typical time |
+|---|---|
+| Fresh machine (everything to install) | **About 10 to 15 minutes**, mostly downloads. The largest items are mingw (about 2.5 min), pi with Node.js (about 2 min), and Neovim plugins (about 1.5 min). |
+| Re-run when everything is already installed | **Under 30 seconds** |
+| `dots-pull` (configs only) | **A few seconds** |
+
+The installer shows what's happening as it runs:
+- Before starting, it lists what will be installed and an estimated total time.
+- Each step is numbered (`[3/13]`) and shows the time elapsed and roughly how much is left. The window title shows the same.
+- Slow items say how long they usually take before they start, then how long they actually took.
+- At the end you get the total time and the slowest steps.
+- Every run is logged to `%LOCALAPPDATA%\dotfiles\logs\`. If something fails, it says which step failed and where the log is. Run the same command again: finished steps are skipped.
+
 You can re-run the installer at any time. It skips anything already in place. Anything it replaces is backed up as `<name>.bak-<timestamp>`.
 
 ## Day-to-day commands (PowerShell / pwsh)

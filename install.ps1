@@ -18,6 +18,7 @@
 #
 #  Safe to re-run: anything already in place is skipped, anything replaced is
 #  backed up next to the original as <name>.bak-<timestamp>.
+#  Every run writes a log to %LOCALAPPDATA%\dotfiles\logs\.
 # =====================================================================
 param([switch]$ConfigOnly, [switch]$Collect)
 
@@ -31,6 +32,8 @@ $Dotfiles   = Join-Path $HOME 'dotfiles'
 $ScoopRoot  = if ($env:SCOOP) { $env:SCOOP } else { Join-Path $HOME 'scoop' }
 $Stamp      = Get-Date -Format 'yyyyMMdd-HHmmss'
 $Utf8NoBom  = New-Object System.Text.UTF8Encoding $false
+$LogDir     = Join-Path $env:LOCALAPPDATA 'dotfiles\logs'
+$LogFile    = Join-Path $LogDir "install-$Stamp.log"
 
 $ScoopBuckets = @('extras', 'nerd-fonts')
 $ScoopApps = @(
@@ -40,14 +43,74 @@ $ScoopApps = @(
     'windows-terminal', 'JetBrainsMono-NF'
 )
 
+# Rough time per item in seconds on a decent connection - used for the
+# "usually ~Xs" hints and the time-left estimate. Mostly download + unzip.
+$Est = @{
+    'scoop' = 45; 'bucket' = 20
+    '7zip' = 15; 'git' = 60; 'neovim' = 30; 'ripgrep' = 10; 'fd' = 10; 'mingw' = 150
+    'tree-sitter' = 10; 'starship' = 10; 'zoxide' = 10; 'yazi' = 30
+    'windows-terminal' = 45; 'JetBrainsMono-NF' = 40
+    'herdr' = 30; 'pi' = 120; 'pi-package' = 30; 'herdr-integration' = 5
+    'clone' = 15; 'nvim-plugins' = 90; 'nvim-check' = 10; 'configs' = 10
+}
+
 # pi keys that pi writes itself - never stored in the repo
 $PiIgnoredKeys = @('lastChangelogVersion', 'extensionChangelogVersions')
 
 # ---------------------------------------------------------------------
-function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
-function Ok($msg)   { Write-Host "    ok   $msg" -ForegroundColor DarkGray }
-function Did($msg)  { Write-Host "    done $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "    warn $msg" -ForegroundColor Yellow }
+# Output + progress helpers
+# ---------------------------------------------------------------------
+$Prog = @{                                   # progress state (hashtable so functions can update it)
+    Step = 0; Total = 0; Name = $null
+    Clock = [Diagnostics.Stopwatch]::StartNew(); StepWatch = $null
+    TaskWatch = $null; TaskEst = 0; Remaining = 0
+    Times = New-Object System.Collections.ArrayList
+}
+
+function Fmt([double]$s) {
+    $s = [int][math]::Round($s)
+    if ($s -lt 60) { "${s}s" } else { '{0}m{1:00}s' -f [int][math]::Floor($s / 60), ($s % 60) }
+}
+$OrigTitle = try { $Host.UI.RawUI.WindowTitle } catch { $null }
+function Set-Title($t) { try { $Host.UI.RawUI.WindowTitle = "dotfiles: $t" } catch {} }
+
+function Ok($msg)   { Write-Host "    ok    $msg" -ForegroundColor DarkGray }
+function Did($msg)  { Write-Host "    done  $msg" -ForegroundColor Green }
+function Warn($msg) { Write-Host "    warn  $msg" -ForegroundColor Yellow }
+function Info($msg) { Write-Host "          $msg" -ForegroundColor DarkGray }
+
+function End-Step {
+    if (-not $Prog.Name) { return }
+    $t = $Prog.StepWatch.Elapsed.TotalSeconds
+    [void]$Prog.Times.Add([pscustomobject]@{ Step = $Prog.Name; Seconds = $t })
+    if ($t -ge 3) { Info "step took $(Fmt $t)" }
+    $Prog.Name = $null
+}
+
+# Start a numbered step:  [3/13] Scoop apps   (elapsed 1m02s, ~9m left)
+function Step($msg) {
+    End-Step
+    $Prog.Step++; $Prog.Name = $msg; $Prog.StepWatch = [Diagnostics.Stopwatch]::StartNew()
+    $meta = "elapsed $(Fmt $Prog.Clock.Elapsed.TotalSeconds)"
+    if ($Prog.Remaining -ge 30) { $meta += ", ~$(Fmt $Prog.Remaining) left" }
+    Write-Host ("`n[{0}/{1}] {2}" -f $Prog.Step, $Prog.Total, $msg) -ForegroundColor Cyan -NoNewline
+    Write-Host "   ($meta)" -ForegroundColor DarkGray
+    Set-Title "[$($Prog.Step)/$($Prog.Total)] $msg"
+}
+
+# Announce something slow before it starts, then report how long it took
+function Task($what, $key) {
+    $Prog.TaskEst = if ($Est.ContainsKey($key)) { $Est[$key] } else { 30 }
+    Write-Host ("    ...   {0}  (usually ~{1})" -f $what, (Fmt $Prog.TaskEst)) -ForegroundColor White
+    $left = if ($Prog.Remaining -ge 30) { " - ~$(Fmt $Prog.Remaining) left" } else { '' }
+    Set-Title "[$($Prog.Step)/$($Prog.Total)] $what$left"
+    $Prog.TaskWatch = [Diagnostics.Stopwatch]::StartNew()
+}
+function Task-Done($msg, [switch]$Failed) {
+    $t = Fmt $Prog.TaskWatch.Elapsed.TotalSeconds
+    $Prog.Remaining = [math]::Max(0, $Prog.Remaining - $Prog.TaskEst)
+    if ($Failed) { Warn "$msg  ($t)" } else { Did "$msg  ($t)" }
+}
 
 function Has($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
@@ -120,16 +183,21 @@ function Write-Json($Path, $Obj) {
     return $true
 }
 
+function App-Installed($app) { Test-Path (Join-Path $ScoopRoot "apps\$app\current") }
+function Pi-Package-Name($pkg) { $pkg -replace '^npm:', '' -replace '(?<=.)@[^/]*$', '' }
+function Pi-Package-Installed($pkg) { Test-Path (Join-Path $HOME ".pi\agent\npm\node_modules\$(Pi-Package-Name $pkg)") }
+
 # Paths of app-owned config files
 $HerdrConfig = Join-Path $env:APPDATA 'herdr\config.toml'
 $WTSettings  = Join-Path $ScoopRoot 'persist\windows-terminal\settings\settings.json'
 $PiSettings  = Join-Path $HOME '.pi\agent\settings.json'
+$LazyDir     = Join-Path $env:LOCALAPPDATA 'nvim-data\lazy\lazy.nvim'
 
 # ---------------------------------------------------------------------
-# -Collect: copy live configs back into the repo
+# -Collect: copy live configs back into the repo (quick, no progress UI)
 # ---------------------------------------------------------------------
 if ($Collect) {
-    Step 'Collecting app configs into the repo'
+    Write-Host "`n==> Collecting app configs into the repo" -ForegroundColor Cyan
     if (Test-Path $HerdrConfig) { Copy-Item $HerdrConfig (Join-Path $Dotfiles 'herdr\config.toml') -Force; Ok 'herdr' }
     if (Test-Path $WTSettings)  { Copy-Item $WTSettings (Join-Path $Dotfiles 'windows-terminal\settings.json') -Force; Ok 'windows terminal' }
     if (Test-Path $PiSettings) {
@@ -140,6 +208,48 @@ if ($Collect) {
     return
 }
 
+# ---------------------------------------------------------------------
+# Plan: work out what's missing so we can show an honest time estimate
+# ---------------------------------------------------------------------
+$todo = New-Object System.Collections.ArrayList
+if (-not $ConfigOnly) {
+    if (-not (Has scoop)) { [void]$todo.Add('scoop') }
+    foreach ($b in $ScoopBuckets) { if (-not (Test-Path (Join-Path $ScoopRoot "buckets\$b"))) { [void]$todo.Add("bucket:$b") } }
+    foreach ($app in $ScoopApps) { if (-not (App-Installed $app)) { [void]$todo.Add($app) } }
+    if (-not (Has herdr)) { [void]$todo.Add('herdr') }
+    if (-not (Has pi))    { [void]$todo.Add('pi') }
+}
+if (-not (Test-Path (Join-Path $Dotfiles '.git'))) { [void]$todo.Add('clone') }
+$piRepoSettings = Join-Path $Dotfiles 'pi\settings.json'
+if (Test-Path $piRepoSettings) {
+    foreach ($pkg in @((Get-Content $piRepoSettings -Raw | ConvertFrom-Json).packages)) {
+        if ($pkg -and -not (Pi-Package-Installed $pkg)) { [void]$todo.Add('pi-package') }
+    }
+} elseif ('clone' -in $todo) { [void]$todo.Add('pi-package') }
+$nvimKey = if (Test-Path $LazyDir) { 'nvim-check' } else { 'nvim-plugins' }
+
+$Prog.Remaining = $Est['configs'] + $Est[$nvimKey]
+foreach ($t in $todo) { $k = ($t -split ':')[0]; $Prog.Remaining += $(if ($Est.ContainsKey($k)) { $Est[$k] } else { 30 }) }
+$Prog.Total = if ($ConfigOnly) { 8 } else { 13 }
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+try { Start-Transcript -Path $LogFile -ErrorAction Stop | Out-Null; $transcript = $true } catch { $transcript = $false }
+
+Write-Host ''
+Write-Host '  Dotfiles installer' -ForegroundColor Cyan
+Write-Host "  Mode:        $(if ($ConfigOnly) { 'apply configs only' } else { 'install apps + apply configs' })"
+$installList = @($todo | Where-Object { $_ -notin @('clone', 'pi-package') } | ForEach-Object { $_ -replace '^bucket:', 'bucket ' })
+if ($installList.Count) {
+    Write-Host "  To install:  $($installList -join ', ')"
+} elseif (-not $ConfigOnly) {
+    Write-Host '  To install:  nothing - all apps already present'
+}
+Write-Host "  Estimated:   ~$(Fmt $Prog.Remaining)" -NoNewline
+Write-Host '  (mostly downloads - depends on connection speed)' -ForegroundColor DarkGray
+if ($transcript) { Write-Host "  Log file:    $LogFile" -ForegroundColor DarkGray }
+Write-Host '  Progress is also shown in the window title. Safe to re-run if interrupted.' -ForegroundColor DarkGray
+
+try {
 # ---------------------------------------------------------------------
 # Apps
 # ---------------------------------------------------------------------
@@ -154,43 +264,53 @@ if (-not $ConfigOnly) {
     } else { Ok "CurrentUser policy is $policy" }
     Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
 
-    Step 'Scoop'
+    Step 'Scoop (per-user package manager)'
     if (-not (Has scoop)) {
+        Task 'installing scoop' 'scoop'
+        $scoopUrl = 'https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1'
         if (Is-Admin) {
             Warn 'running as administrator - installing scoop with -RunAsAdmin (still per-user)'
-            Run-Installer 'https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1' @('-RunAsAdmin')
-        } else {
-            Run-Installer 'https://raw.githubusercontent.com/ScoopInstaller/Install/master/install.ps1'
-        }
+            Run-Installer $scoopUrl @('-RunAsAdmin')
+        } else { Run-Installer $scoopUrl }
         Refresh-Path
-        Did 'installed scoop'
+        Task-Done 'installed scoop'
     } else { Ok 'scoop already installed' }
 
-    Step 'Scoop apps'
+    $missingApps = @($ScoopApps | Where-Object { -not (App-Installed $_) })
+    Step "Scoop apps ($($missingApps.Count) of $($ScoopApps.Count) to install)"
+    $n = 0
     foreach ($app in $ScoopApps) {
         if ($app -eq 'neovim') {   # buckets need git, so add them once git is in
             foreach ($b in $ScoopBuckets) {
-                if (-not (Test-Path (Join-Path $ScoopRoot "buckets\$b"))) { Native { scoop bucket add $b }; Did "bucket $b" }
+                if (-not (Test-Path (Join-Path $ScoopRoot "buckets\$b"))) {
+                    Task "adding scoop bucket '$b'" 'bucket'
+                    Native { scoop bucket add $b }
+                    Task-Done "bucket $b"
+                }
             }
         }
-        if (Test-Path (Join-Path $ScoopRoot "apps\$app\current")) { Ok $app; continue }
+        if (App-Installed $app) { Ok $app; continue }
+        $n++
+        Task "installing $app ($n of $($missingApps.Count))" $app
         Native { scoop install $app }
-        if (Test-Path (Join-Path $ScoopRoot "apps\$app\current")) { Did $app } else { Warn "$app failed to install - re-run later" }
+        if (App-Installed $app) { Task-Done $app } else { Task-Done "$app failed to install - re-run later" -Failed }
     }
     Refresh-Path
 
-    Step 'herdr'
+    Step 'herdr (terminal workspace manager)'
     if (-not (Has herdr)) {
+        Task 'installing herdr' 'herdr'
         Run-Installer 'https://herdr.dev/install.ps1'
         Refresh-Path
-        Did 'installed herdr'
+        Task-Done 'installed herdr'
     } else { Ok 'herdr already installed' }
 
-    Step 'pi'
+    Step 'pi (coding agent)'
     if (-not (Has pi)) {
+        Task 'installing pi (may also install Node.js)' 'pi'
         Run-Installer 'https://pi.dev/install.ps1'
         Refresh-Path
-        Did 'installed pi'
+        Task-Done 'installed pi'
     } else { Ok 'pi already installed' }
 }
 
@@ -200,25 +320,26 @@ if (-not $ConfigOnly) {
 Step 'Dotfiles repo'
 if (-not (Test-Path (Join-Path $Dotfiles '.git'))) {
     if (Test-Path $Dotfiles) { Backup $Dotfiles }
+    Task "cloning $RepoUrl" 'clone'
     Native { git clone $RepoUrl $Dotfiles }
     if (-not (Test-Path (Join-Path $Dotfiles '.git'))) { throw "git clone of $RepoUrl failed" }
-    Did "cloned to $Dotfiles"
+    Task-Done "cloned to $Dotfiles"
 } else { Ok $Dotfiles }
 
 # ---------------------------------------------------------------------
 # Configs
 # ---------------------------------------------------------------------
-Step 'Linking configs'
+Step 'Linking configs (nvim, pi skills)'
 Link-Dir (Join-Path $env:LOCALAPPDATA 'nvim') (Join-Path $Dotfiles 'nvim')
 Link-Dir (Join-Path $HOME '.agents')          (Join-Path $Dotfiles 'agents')
 
-Step 'Copying app-owned configs'
+Step 'Copying app configs (herdr, Windows Terminal)'
 Copy-Config (Join-Path $Dotfiles 'herdr\config.toml') $HerdrConfig
 if (Test-Path (Join-Path $ScoopRoot 'apps\windows-terminal')) {
     Copy-Config (Join-Path $Dotfiles 'windows-terminal\settings.json') $WTSettings
 }
 
-Step 'pi settings (merged, your login is untouched)'
+Step 'pi settings + packages (your login is untouched)'
 $repoPi = Get-Content (Join-Path $Dotfiles 'pi\settings.json') -Raw | ConvertFrom-Json
 if (Test-Path $PiSettings) { $livePi = Get-Content $PiSettings -Raw | ConvertFrom-Json }
 else { New-Item -ItemType Directory -Force -Path (Split-Path $PiSettings) | Out-Null; $livePi = New-Object PSObject }
@@ -227,11 +348,14 @@ if (Write-Json $PiSettings $livePi) { Did $PiSettings } else { Ok $PiSettings }
 
 if (Has pi) {
     foreach ($pkg in @($repoPi.packages)) {
-        $name = $pkg -replace '^npm:', '' -replace '(?<=.)@[^/]*$', ''
-        if (Test-Path (Join-Path $HOME ".pi\agent\npm\node_modules\$name")) { Ok "pi package $pkg" }
-        else { Native { pi install $pkg }; Did "pi package $pkg" }
+        if (Pi-Package-Installed $pkg) { Ok "pi package $pkg" }
+        else {
+            Task "installing pi package $pkg" 'pi-package'
+            Native { pi install $pkg }
+            if (Pi-Package-Installed $pkg) { Task-Done "pi package $pkg" } else { Task-Done "pi package $pkg may have failed - check 'pi list'" -Failed }
+        }
     }
-}
+} else { Warn 'pi not found - skipped packages' }
 if ((Has herdr) -and (Has pi)) {
     if ((Native { herdr integration status 2>&1 } | Out-String) -match 'pi: current') { Ok 'herdr <-> pi integration' }
     else { Native { herdr integration install pi }; Did 'herdr <-> pi integration' }
@@ -281,13 +405,46 @@ if (-not (Test-Path $localProfile)) {
 
 Step 'Neovim plugins'
 if (Has nvim) {
+    if ($nvimKey -eq 'nvim-plugins') {
+        Task 'downloading Neovim plugins - no output until finished' 'nvim-plugins'
+    } else {
+        Task 'checking Neovim plugins match lazy-lock.json' 'nvim-check'
+    }
     Native { nvim --headless '+Lazy! restore' +qa 2>&1 | Out-Null }
-    Did 'plugins installed at locked versions (language servers install on first launch)'
+    Task-Done 'plugins at locked versions (language servers install on first launch)'
 } else { Warn 'nvim not found - skipped' }
 
-Write-Host "`nAll set. Close this window and open a new one (cmd, powershell or pwsh)" -ForegroundColor Green
-Write-Host "so the new PATH and profile load. Then try: herdr, pi, nvim, y, z <folder>" -ForegroundColor Green
+End-Step
+
+# ---------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------
+$total = $Prog.Clock.Elapsed.TotalSeconds
+Write-Host ''
+Write-Host "  Finished in $(Fmt $total)." -ForegroundColor Green
+$slow = @($Prog.Times | Where-Object { $_.Seconds -ge 3 } | Sort-Object Seconds -Descending | Select-Object -First 4)
+if ($slow.Count) {
+    Write-Host ("  Slowest: " + (($slow | ForEach-Object { "$($_.Step) $(Fmt $_.Seconds)" }) -join ' | ')) -ForegroundColor DarkGray
+}
+if ($transcript) { Write-Host "  Log: $LogFile" -ForegroundColor DarkGray }
+Write-Host ''
+Write-Host '  Close this window and open a new one (cmd, powershell or pwsh) so the' -ForegroundColor Green
+Write-Host '  new PATH and profile load. Then try: herdr, pi, nvim, y, z <folder>' -ForegroundColor Green
 if (-not (Test-Path (Join-Path $HOME '.pi\agent\auth.json'))) {
-    Write-Host "Next: run 'pi' and use /login to sign in." -ForegroundColor Yellow
+    Write-Host "  Next: run 'pi' and use /login to sign in." -ForegroundColor Yellow
+}
+}
+catch {
+    Write-Host ''
+    Write-Host "  FAILED during step [$($Prog.Step)/$($Prog.Total)] $($Prog.Name) after $(Fmt $Prog.Clock.Elapsed.TotalSeconds)" -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+    if ($transcript) { Write-Host "  Full log: $LogFile" -ForegroundColor Yellow }
+    Write-Host '  Fix the issue (or just retry) and run the same command again -' -ForegroundColor Yellow
+    Write-Host '  finished steps are skipped, so it picks up where it left off.' -ForegroundColor Yellow
+    throw
+}
+finally {
+    if ($transcript) { try { Stop-Transcript | Out-Null } catch {} }
+    if ($OrigTitle) { try { $Host.UI.RawUI.WindowTitle = $OrigTitle } catch {} }
 }
 }
