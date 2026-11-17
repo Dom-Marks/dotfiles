@@ -183,7 +183,26 @@ function Write-Json($Path, $Obj) {
     return $true
 }
 
-function App-Installed($app) { Test-Path (Join-Path $ScoopRoot "apps\$app\current") }
+# Scoop writes scoop-install.json (older versions: install.json) as the last step,
+# so an install interrupted part-way counts as "not installed" and is retried -
+# scoop itself purges/repairs the half-finished copy.
+function App-Installed($app) {
+    $cur = Join-Path $ScoopRoot "apps\$app\current"
+    (Test-Path (Join-Path $cur 'scoop-install.json')) -or (Test-Path (Join-Path $cur 'install.json'))
+}
+
+# A repo counts as present only if the clone actually finished (has a commit checked out)
+function Repo-Ok {
+    if (-not (Test-Path (Join-Path $Dotfiles '.git'))) { return $false }
+    Native { git -C $Dotfiles rev-parse --verify --quiet HEAD 2>&1 | Out-Null }
+    ($LASTEXITCODE -eq 0) -and (Test-Path (Join-Path $Dotfiles 'install.ps1'))
+}
+
+# scoop installed but its shims folder not on PATH yet (e.g. a run was cancelled)
+$scoopShims = Join-Path $ScoopRoot 'shims'
+if ((Test-Path (Join-Path $scoopShims 'scoop.ps1')) -and ($env:Path -notlike "*$scoopShims*")) {
+    $env:Path = "$scoopShims;$env:Path"
+}
 function Pi-Package-Name($pkg) { $pkg -replace '^npm:', '' -replace '(?<=.)@[^/]*$', '' }
 function Pi-Package-Installed($pkg) { Test-Path (Join-Path $HOME ".pi\agent\npm\node_modules\$(Pi-Package-Name $pkg)") }
 
@@ -219,7 +238,7 @@ if (-not $ConfigOnly) {
     if (-not (Has herdr)) { [void]$todo.Add('herdr') }
     if (-not (Has pi))    { [void]$todo.Add('pi') }
 }
-if (-not (Test-Path (Join-Path $Dotfiles '.git'))) { [void]$todo.Add('clone') }
+if (-not (Has git) -or -not (Repo-Ok)) { [void]$todo.Add('clone') }
 $piRepoSettings = Join-Path $Dotfiles 'pi\settings.json'
 if (Test-Path $piRepoSettings) {
     foreach ($pkg in @((Get-Content $piRepoSettings -Raw | ConvertFrom-Json).packages)) {
@@ -318,8 +337,8 @@ if (-not $ConfigOnly) {
 # Repo
 # ---------------------------------------------------------------------
 Step 'Dotfiles repo'
-if (-not (Test-Path (Join-Path $Dotfiles '.git'))) {
-    if (Test-Path $Dotfiles) { Backup $Dotfiles }
+if (-not (Repo-Ok)) {
+    if (Test-Path $Dotfiles) { Warn 'existing dotfiles folder is incomplete (interrupted clone?)'; Backup $Dotfiles }
     Task "cloning $RepoUrl" 'clone'
     Native { git clone $RepoUrl $Dotfiles }
     if (-not (Test-Path (Join-Path $Dotfiles '.git'))) { throw "git clone of $RepoUrl failed" }
